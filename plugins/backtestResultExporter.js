@@ -129,7 +129,7 @@ BacktestResultExporter.prototype.writeToDisk = function(backtest, next) {
   }
 
   fs.writeFile(
-    util.dirs().gekko + filename,
+    util.dirs().gekko + 'backtest_results/' + filename,
     JSON.stringify(backtest),
     err => {
       if(err) {

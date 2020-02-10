@@ -255,6 +255,14 @@ var plugins = [
     async: false,
     modes: ['realtime'],
   },
+  {
+    name: 'Multi Backtest',
+    description: 'Backtests multiple configurations',
+    slug: 'multiBacktester',
+    async: false,
+    modes: ['multiBacktest'],
+    path: config => 'multiBacktester/multiBacktester.js',
+  },
 ];
 
 module.exports = plugins;
