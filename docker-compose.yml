@@ -5,16 +5,16 @@ services:
     volumes:
 #      - ./volumes/gekko/history:/usr/src/app/history
       - ./config.js:/usr/src/app/config.js
-#      - ./gekko.js:/usr/src/app/gekko.js
-#      - ./backtest_results:/usr/src/app/backtest_results
-#      - ./config:/usr/src/app/config
-#      - ./core:/usr/src/app/core
-#      - ./importers:/usr/src/app/importers
-#      - ./logs:/usr/src/app/logs
-#      - ./plugins:/usr/src/app/plugins
-#      - ./strategies:/usr/src/app/strategies
-#      - ./test:/usr/src/app/test
-#      - ./multi-backtest-configs:/usr/src/app/multi-backtest-configs
+      - ./gekko.js:/usr/src/app/gekko.js
+      - ./backtest_results:/usr/src/app/backtest_results
+      - ./config:/usr/src/app/config
+      - ./core:/usr/src/app/core
+      - ./importers:/usr/src/app/importers
+      - ./logs:/usr/src/app/logs
+      - ./plugins:/usr/src/app/plugins
+      - ./strategies:/usr/src/app/strategies
+      - ./test:/usr/src/app/test
+      - ./multi-backtest-configs:/usr/src/app/multi-backtest-configs
     links:
       - redis
     #      - postgresql
