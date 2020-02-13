@@ -1,6 +1,7 @@
 FROM node:8
 
-ENV HOST localhost
+# ENV HOST localhost
+ENV HOST 192.168.99.100
 ENV PORT 3000
 
 # Create app directory
@@ -24,8 +25,17 @@ RUN npm install --production && \
     npm cache clean --force
 WORKDIR ../
 
+# Install development cruft
+RUN apt-get update
+RUN apt-get install -y vim
+RUN apt-get install -y nano
+RUN apt-get install -y less
+
 # Bundle app source
 COPY . /usr/src/app
+
+# Make it look pretty when i log into the box
+COPY ./build/.bashrc /root/
 
 EXPOSE 3000
 RUN chmod +x /usr/src/app/docker-entrypoint.sh

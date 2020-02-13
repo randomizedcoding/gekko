@@ -33,7 +33,7 @@ var fullPath = [dir, dbName].join('/');
 var mode = util.gekkoMode();
 if (mode === 'realtime' || mode === 'importer') {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir);
-} else if (mode === 'backtest') {
+} else if (mode === 'backtest' || mode === 'mult-backtest') {
   if (!fs.existsSync(dir)) util.die('History directory does not exist.');
 
   if (!fs.existsSync(fullPath))

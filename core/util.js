@@ -139,6 +139,8 @@ var util = {
       return 'importer';
     else if(program.backtest)
       return 'backtest';
+    else if(program.multiBacktest)
+      return 'multi-backtest';
     else
       return 'realtime';
   },
@@ -146,6 +148,7 @@ var util = {
     return [
       'importer',
       'backtest',
+      'multi-backtest',
       'realtime'
     ]
   },
@@ -172,6 +175,7 @@ program
   .version(util.logVersion())
   .option('-c, --config <file>', 'Config file')
   .option('-b, --backtest', 'backtesting mode')
+  .option('-mb, --multi-backtest', 'backtesting mode across ranges')
   .option('-i, --import', 'importer mode')
   .option('--ui', 'launch a web UI')
   .parse(process.argv);
