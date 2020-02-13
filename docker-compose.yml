@@ -6,7 +6,7 @@ services:
 #      - ./volumes/gekko/history:/usr/src/app/history
       - ./config.js:/usr/src/app/config.js
       - ./gekko.js:/usr/src/app/gekko.js
-      - ./backtest_results:/usr/src/app/backtest_results
+      - ./backtest-results:/usr/src/app/backtest-results
       - ./config:/usr/src/app/config
       - ./core:/usr/src/app/core
       - ./importers:/usr/src/app/importers

@@ -13,95 +13,228 @@ const forker = require('child_process');
 
 const numConcurrentConfigsToRun = 3;
 
-var multiBacktester = {
+const anyProfitReportLine = /\(PROFIT REPORT\)/;
+const timespanLine = /\(PROFIT REPORT\) timespan:\s+((\S+\s*)+)/;
+const marketProfitPctLine = /\(PROFIT REPORT\) Market:\s+([^%]+)/;
+const profitLine = /\(PROFIT REPORT\) profit:.*\(([^%]+)/;
+const virtYrlyProfitLine = /\(PROFIT REPORT\) simulated yearly profit:\s+[^\(]+\(([^%]+)/;
+const numTradesLine = /\(PROFIT REPORT\) amount of trades:\s+(\S+)/;
+const exposureLine = /\(PROFIT REPORT\) exposure:\s+(\S+)/;
+const backtestFileLine = /written backtest to:.+\/([^\/]+\.json)/;
+
+
+const multiBacktester = {
     runTests: async function (config) {
         util.setGekkoMode('backtest');
 
-        var rangesToTest = [];
-        for (var configGroupKey in config.backtestRangeConfig) {
-            var rangeGroup = config.backtestRangeConfig[configGroupKey];
-            for (var configItemKey in rangeGroup) {
+        const rangesToTest = [];
+        for (let configGroupKey in config.backtestRangeConfig) {
+            const rangeGroup = config.backtestRangeConfig[configGroupKey];
+            for (let configItemKey in rangeGroup) {
                 rangesToTest.push({configGroupKey: configGroupKey, configItemKey: configItemKey, range: new MetaRange(rangeGroup[configItemKey])});
             }
         }
 
-        var totalConfigurationCount = 1;
-        var secondsPerRun = 30;
+        let totalConfigurationCount = 1;
+        let secondsPerRun = 30000;
         rangesToTest.forEach(r => totalConfigurationCount = totalConfigurationCount * r.range.items.length);
-        var start = new Date();
+        const start = new Date();
 
         log.warn("Running baseline config backtest for baseline");
-        var originalConfigRun = forkAsPromised(`${__dirname}/../../gekko.js`, ['--backtest', '--config', 'config.js'], {silent: true});
-        var result = await originalConfigRun;
+        const originalConfigRun = forkAsPromised(`${__dirname}/../../gekko.js`, ['--backtest', '--config', 'config.js'], {silent: true}, null);
+        const result = await originalConfigRun.catch((err) => {
+            log.error(err);
+            util.die("Error running original config")
+        });
         secondsPerRun = (new Date() - start) / 1000;
-        prompt.start();
+        let totalProjectedTime = moment.duration(secondsPerRun * 1.5 * totalConfigurationCount, 'seconds');
+        let originalConfigTime = moment.duration(secondsPerRun, 'seconds').humanize();
+        let doubleConfigTime = moment.duration(secondsPerRun * 2, 'seconds').humanize();
+        if (doubleConfigTime === "a few seconds") {doubleConfigTime = "a few more seconds"}
 
-        var warning = rangesToTest.map(r => "\t\t" + r.configGroupKey + "." + r.configItemKey + " => [" + r.range.items.length + " items: " + r.range.items + "]");
+        let warning = rangesToTest.map(r => `\t\t${r.configGroupKey}.${r.configItemKey} => [${r.range.items.length} items: ${r.range.items}]`);
         warning.unshift('\n\n\tRunning backtests over ' + totalConfigurationCount + ' configurations as follows: ');
-        var totalProjectedTime = moment.duration(secondsPerRun * 1.5 * totalConfigurationCount, 'seconds');
-        console.log(secondsPerRun + " seconds to run original config");
-        warning.push('\n\n\tWARNING: Assuming between ' + secondsPerRun + ' and ' + secondsPerRun * 2 +
-                     ' seconds per configuration run, this will take about ' + totalProjectedTime.humanize() + '\n');
-        warning = warning.join('\n');
-        log.warn(warning);
+        warning.push(`\n\tOriginal config took ${originalConfigTime} to run.` +
+                     `\n\n\tAssuming between ${originalConfigTime} and ${doubleConfigTime} per configuration run, ` +
+                     `running ${totalConfigurationCount} configurations will take about ${totalProjectedTime.humanize()}.\n`);
+        log.warn(warning.join('\n'));
 
-        prompt.get({name: 'confirmed'}, _.bind(function (something, results) {
-            let userResponse = results.confirmed.toLowerCase();
-            if (userResponse === 'y' || userResponse === 'yes' || userResponse === 'sure') {
-                log.debug("Generating configuration permutations");
-                var configsToTest = getPermutatedConfigRanges(rangesToTest);
-                var runningPermutation = 1;
-                var permutationGroup = 1;
-
-                var finishedConfigs = [];
-                while (configsToTest.length > 0 && permutationGroup < 4) {
-                    var runningConfigs = [];
-                    var start = new Date();
-                    for (var i = 0; ((i < numConcurrentConfigsToRun) && (configsToTest.length > 0)); i++) {
-                        let modifications = configsToTest.pop();
-                        var configIteration = JSON.parse(JSON.stringify(config));
-                        for (var modIndex = 0; modIndex < modifications.length; modIndex++) {
-                            configIteration[modifications[modIndex].configGroupKey][modifications[modIndex].configItemKey] = modifications[modIndex].value;
-                        }
-                        log.debug('Running permutation #' + (runningPermutation++) +
-                                  ' with values: ' + modifications.map(r => "\t" + r.configGroupKey + "." + r.configItemKey + ": " + r.value));
-
-                        let configFilename = './multi-backtest-configs/config-g' + permutationGroup + 'i' + (runningPermutation) + '.js';
-                        fs.writeFile(configFilename, JSON.stringify(configIteration), (err) => {if (err) {log.error(err);}});
-
-                        var configRun = forkAsPromised(`${__dirname}/../../gekko.js`,
-                                                       ['--backtest', '--config', configFilename],
-                                                       {silent: true});
-                        runningConfigs.push({modifications: modifications, config: configIteration, configFilename: configFilename, configRun: configRun});
-                    }
-
-                    console.log('awaiting group '+permutationGroup);
-                    Promise.all(runningConfigs.map(cfg => cfg.configRun));
-                    var secondsForGroup = new Date() - start;
-                    console.log('and it took this many seconds '+secondsForGroup);
-
-                    log.debug("------------------------ Loop #" + (permutationGroup++) + " --------------");
-                }
-            }
-        }, this));
+        prompt.start();
+        prompt.get({name: 'confirmed'}, _.bind(runAllPermutations, this, rangesToTest));
     }
 };
 
+async function runAllPermutations(rangesToTest, dontCare, results) {
+    let userResponse = results.confirmed.toLowerCase();
+    if (userResponse === 'y' || userResponse === 'yes' || userResponse === 'sure') {
+        log.debug("Generating configuration permutations");
+        const configsToTest = getPermutatedConfigRanges(rangesToTest);
+        let runningPermutation = 1;
+        let permutationGroup = 1;
+
+        const finishedConfigs = [];
+        const startedLooping = new Date();
+        while (configsToTest.length > 0) {
+            const runningConfigs = [];
+            const start = new Date();
+            for (let i = 0; ((i < numConcurrentConfigsToRun) && (configsToTest.length > 0)); i++) {
+                let modifications = configsToTest.pop();
+                const configIteration = JSON.parse(JSON.stringify(config));
+                configIteration.backtestRangeConfig = [];
+                for (let modIndex = 0; modIndex < modifications.length; modIndex++) {
+                    configIteration[modifications[modIndex].configGroupKey][modifications[modIndex].configItemKey] = modifications[modIndex].value;
+                }
+
+                log.debug(`Permutation #${runningPermutation++} with: ${modifications.map(r => ' ' + (isFinite(r.value) ? (r.configItemKey + ": ") : '') + r.value)}`);
+
+                let configFilename = 'multi-backtest-configs/config-g' + permutationGroup + 'i' + (runningPermutation) + '.js';
+                fs.writeFile(configFilename,
+                             "// Generated by multiBacktester at " + (new Date()).toLocaleString() + "\n\n" +
+                             "var config = " +
+                             JSON.stringify(configIteration, undefined, 4) +
+                             ";\n\nmodule.exports = config;",
+                             (err) => {if (err) {log.error(err);}});
+
+                let configMetadata = {modifications: modifications, config: configIteration, configFilename: configFilename};
+                configMetadata.configRun =
+                    forkAsPromised(`${__dirname}/../../gekko.js`,
+                                   ['--backtest', '--config', configFilename],
+                                   {silent: true},
+                                   configMetadata)
+                        .catch((err) => {
+                            log.error(err);
+                            util.die("Error running config" + configFilename);
+                        });
+                runningConfigs.push(configMetadata);
+            }
+
+            await Promise.all(runningConfigs.map(cfg => cfg.configRun))
+                         .then((runResults) => {
+                             runResults.forEach((runResultData) => {
+                                 let configMetadata = runResultData.configMetadata;
+                                 let backtestResults = runResultData.stdout;
+
+                                 let result = {
+                                     timespan: false,
+                                     marketProfitPct: false,
+                                     profitPct: false,
+                                     virtYrlyProfitPct: false,
+                                     hasActualResults: false,
+                                     backtestFile: false,
+                                     configFilename: configMetadata.configFilename,
+                                     configModifications: configMetadata.modifications
+                                 };
+
+                                 if (anyProfitReportLine.test(backtestResults)) {
+                                     // Get an array of lines
+                                     backtestResults = backtestResults.split("\n");
+
+                                     // Find the matching lines
+                                     let timespanString = backtestResults.find(resultLine => timespanLine.test(resultLine));
+                                     let marketProfitPctString = backtestResults.find(resultLine => marketProfitPctLine.test(resultLine));
+                                     let profitString = backtestResults.find(resultLine => profitLine.test(resultLine));
+                                     let virtYrlyProfitString = backtestResults.find(resultLine => virtYrlyProfitLine.test(resultLine));
+                                     let numTradesString = backtestResults.find(resultLine => numTradesLine.test(resultLine));
+                                     let exposureString = backtestResults.find(resultLine => exposureLine.test(resultLine));
+                                     let backtestFileString = backtestResults.find(resultLine => backtestFileLine.test(resultLine));
+
+                                     let timespanLineMatches = timespanLine.exec(timespanString);
+                                     let marketProfitPctLineMatches = marketProfitPctLine.exec(marketProfitPctString);
+                                     let profitLineMatches = profitLine.exec(profitString);
+                                     let virtYrlyProfitLineMatches = virtYrlyProfitLine.exec(virtYrlyProfitString);
+                                     let numTradesLineMatches = numTradesLine.exec(numTradesString);
+                                     let exposureLineMatches = exposureLine.exec(exposureString);
+                                     let backtestFileLineMatches = backtestFileLine.exec(backtestFileString);
+
+                                     result.timespan = timespanLineMatches && timespanLineMatches.length > 1 ? timespanLineMatches[1] : false;
+                                     result.marketProfitPct = marketProfitPctLineMatches && marketProfitPctLineMatches.length > 1 ? marketProfitPctLineMatches[1] : false;
+                                     result.profitPct = profitLineMatches && profitLineMatches.length > 1 ? profitLineMatches[1] : false;
+                                     result.virtYrlyProfitPct = virtYrlyProfitLineMatches && virtYrlyProfitLineMatches.length > 1 ? virtYrlyProfitLineMatches[1] : false;
+                                     result.numTrades = numTradesLineMatches && numTradesLineMatches.length > 1 ? numTradesLineMatches[1] : false;
+                                     result.exposure = exposureLineMatches && exposureLineMatches.length > 1 ? exposureLineMatches[1] : false;
+                                     result.backtestFile = backtestFileLineMatches && backtestFileLineMatches.length > 1 ? backtestFileLineMatches[1] : false;
+
+                                     if (result.numTrades) {result.numTrades = Math.round((Number.parseInt(result.numTrades)) * 100) / 100;}
+                                     if (result.marketProfitPct) {result.marketProfitPct = Math.round((Number.parseFloat(result.marketProfitPct)) * 100) / 100;}
+                                     if (result.profitPct) {result.profitPct = Math.round((Number.parseFloat(result.profitPct)) * 100) / 100;}
+                                     if (result.virtYrlyProfitPct) {result.virtYrlyProfitPct = Math.round((Number.parseFloat(result.virtYrlyProfitPct)) * 100) / 100;}
+                                     if (result.exposure) {result.exposure = Math.round(Number.parseFloat(result.exposure) * 10000) / 10000;}
+                                 }
+                                 result.hasActualResults =
+                                     (result.timespan &&
+                                      result.marketProfitPct &&
+                                      result.profitPct &&
+                                      result.virtYrlyProfitPct);
+                                 finishedConfigs.push(result);
+                             });
+                         })
+                         .catch((err) => {log.error(err);});
+
+            const secondsForGroup = (new Date() - start) / 1000;
+            log.debug("------------------------ Finished Loop #" + (permutationGroup++) + " in " +
+                      (moment.duration(secondsForGroup, 'seconds')).humanize() + " ------------------------");
+        }
+
+        const secondsInEntireRun = (new Date() - startedLooping) / 1000;
+
+        let nowMarker = moment().format("YYYY-MM-DD.HHmm (ddd MMM Do @ h.mm a)");
+        forker.execSync(`mkdir "./backtest-results/${nowMarker} Results/"`);
+        forker.execSync(`mv ./backtest-results/backtest-*.json "./backtest-results/${nowMarker} Results/"`);
+        forker.execSync(`mkdir "./multi-backtest-configs/${nowMarker} Configs/"`);
+        forker.execSync(`mv ./multi-backtest-configs/config-g*i*.js "./multi-backtest-configs/${nowMarker} Configs/"`);
+        log.info('');
+        log.info('');
+        log.info('');
+        log.info('------------------------ ALL DONE! ------------------------');
+        log.info(`Finished ${permutationGroup} groups of ${numConcurrentConfigsToRun} in ${moment.duration(secondsInEntireRun).humanize()}`);
+        log.info(`Moved results to './backtest-results/${nowMarker} Results/' and configs to './multi-backtest-configs/${nowMarker} Configs/'`);
+
+        let totalConfigs = finishedConfigs.length;
+        let configsWithResults = finishedConfigs.filter(cfg => cfg.hasActualResults);
+        configsWithResults.sort((a, b) => (a.profitPct > b.profitPct) ? 1 : ((a.profitPct === b.profitPct) ? 0 : -1));
+
+        let averageExposure = Math.round((configsWithResults.reduce((total, cfg) => total + cfg.exposure, 0) / configsWithResults.length) * 10000) / 10000;
+        let averageProfit = Math.round((configsWithResults.reduce((total, cfg) => total + cfg.profitPct, 0) / configsWithResults.length) * 100) / 100;
+        let averageMarket = Math.round((configsWithResults.reduce((total, cfg) => total + cfg.marketProfitPct, 0) / configsWithResults.length) * 100) / 100;
+        let averageYearlyProfit = Math.round((configsWithResults.reduce((total, cfg) => total + cfg.virtYrlyProfitPct, 0) / configsWithResults.length) * 100) / 100;
+        let averageTrades = Math.round((configsWithResults.reduce((total, cfg) => total + cfg.numTrades, 0) / configsWithResults.length) * 100) / 100;
+        let maxRun = configsWithResults[configsWithResults.length - 1];
+        let minRun = configsWithResults[0];
+        let winningConfigs = configsWithResults.filter(cfg => cfg.profitPct > 0);
+        let maxRunFilename = maxRun.configFilename.replace('multi-backtest-configs/', '');
+        let minRunFilename = minRun.configFilename.replace('multi-backtest-configs/', '');
+
+        log.info(`Out of ${totalConfigs} configs, ${configsWithResults.length} produced viable results.`);
+        log.info("Out of those viable configs: ");
+        log.info(`${winningConfigs.length} of them were winners (${Math.round(winningConfigs.length * 10000 / configsWithResults.length) / 100}%)`);
+        log.info(`The average profit was ${averageProfit}% (${averageYearlyProfit}% yearly, and vs a market average of ${averageMarket}%).`);
+        log.info(`The average exposure was ${averageExposure} (with ${averageTrades} trades).`);
+        log.info(`The best run was ${maxRunFilename}, ` + `which had a profit of ${maxRun.profitPct}% (${maxRun.virtYrlyProfitPct}% yearly)`);
+        log.info(`The worst run was ${minRunFilename}, ` + `which had a profit of ${minRun.profitPct}% (${minRun.virtYrlyProfitPct}% yearly)`);
+
+
+        let resultsFilename = `./backtest-results/${nowMarker} Results/Multi-Backtest Results for ${nowMarker} Run.json`;
+        fs.writeFile(resultsFilename,
+                     JSON.stringify(finishedConfigs, undefined, 4),
+                     (err) => {if (err) {log.error(err);}});
+    }
+}
+
 function getPermutatedConfigRanges(rangesToTest) {
-    var rangePermutations = [];
+    const rangePermutations = [];
 
     // number of ranges
-    var numRangesToTest = rangesToTest.length;
+    const numRangesToTest = rangesToTest.length;
 
     // to keep track of next element in each of the ranges
-    var workingIndices = Array(numRangesToTest).fill(0, 0, numRangesToTest);
+    const workingIndices = Array(numRangesToTest).fill(0, 0, numRangesToTest);
 
-    var loopCount = 0;
+    const loopCount = 0;
     while (true) {
         // save current combination
         // var logString = "Loop #" + (++loopCount) + ": ";
-        var currentPermutation = [];
-        for (var i = 0; i < numRangesToTest; i++) {
+        const currentPermutation = [];
+        for (let i = 0; i < numRangesToTest; i++) {
             currentPermutation.push(
                 {
                     configGroupKey: rangesToTest[i].configGroupKey,
@@ -116,7 +249,7 @@ function getPermutatedConfigRanges(rangesToTest) {
         // find the rightmost array that has more
         // elements left after the current element
         // in that array
-        var next = numRangesToTest - 1;
+        let next = numRangesToTest - 1;
         while (next >= 0 &&
                (workingIndices[next] + 1 >= rangesToTest[next].range.items.length)) {
             next--;
@@ -135,17 +268,18 @@ function getPermutatedConfigRanges(rangesToTest) {
         // for all arrays to the right of this
         // array current index again points to
         // first element
-        for (var ii = next + 1; ii < numRangesToTest; ii++) {
+        for (let ii = next + 1; ii < numRangesToTest; ii++) {
             workingIndices[ii] = 0;
         }
     }
 }
 
 function forkAsPromised() {
-    var args = Array.prototype.slice.call(arguments);
+    let args = Array.prototype.slice.call(arguments);
+    let configMetadata = args.pop();
     return new Promise(function (resolve, reject) {
-        var stdout = '', stderr = '';
-        var childProcess = forker.fork.apply(null, args);
+        let stdout = '', stderr = '';
+        const childProcess = forker.fork.apply(null, args);
         childProcess.stdout.on('data', function (chunk) {
             stdout += chunk;
             // console.log("PROCESS: " + stdout);
@@ -157,9 +291,9 @@ function forkAsPromised() {
         childProcess.on('error', reject)
                     .on('close', function (code) {
                         if (code === 0) {
-                            resolve(stdout);
+                            resolve({stdout: stdout, configMetadata: configMetadata});
                         } else {
-                            reject(stderr);
+                            reject("EXIT CODE " + code + "\n\n STDERR:\n" + stderr + "\n\n STDOUT:\n" + stdout);
                         }
                     });
     });
